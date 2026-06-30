@@ -1018,10 +1018,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
@@ -1068,10 +1068,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
@@ -1107,10 +1107,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
@@ -1143,10 +1143,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
@@ -1182,10 +1182,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
@@ -1225,10 +1225,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined) {
+    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
-        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD environment variables.",
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
       )
     }
 
