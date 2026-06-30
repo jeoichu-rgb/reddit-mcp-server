@@ -32,12 +32,15 @@ export class BrowserAuth {
     if (!fs.existsSync(AUTH_STATE_PATH)) return null
 
     try {
-      const state = JSON.parse(fs.readFileSync(AUTH_STATE_PATH, "utf-8"))
-      const cookies = state.cookies ?? []
-      const redditCookies = cookies.filter((c: { domain: string }) => c.domain.includes("reddit.com"))
+      const raw = JSON.parse(fs.readFileSync(AUTH_STATE_PATH, "utf-8"))
+
+      // Support both Cookie Editor export format (plain array) and Playwright storageState format ({cookies: [...]})
+      const cookies: Array<{ domain: string; name: string; value: string }> = Array.isArray(raw) ? raw : (raw.cookies ?? [])
+
+      const redditCookies = cookies.filter((c) => c.domain.includes("reddit.com"))
       if (redditCookies.length === 0) return null
 
-      this.cookieHeader = redditCookies.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join("; ")
+      this.cookieHeader = redditCookies.map((c) => `${c.name}=${c.value}`).join("; ")
       return this.cookieHeader
     } catch {
       return null
