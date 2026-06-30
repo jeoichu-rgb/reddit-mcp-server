@@ -6,6 +6,7 @@ const AUTH_STATE_PATH = path.join(process.cwd(), "auth-state.json")
 
 export class BrowserAuth {
   private cookieHeader: string | null = null
+  private modhash: string | null = null
 
   async login(username: string, password: string): Promise<void> {
     const browser = await chromium.launch({ headless: true })
@@ -48,6 +49,8 @@ export class BrowserAuth {
   }
 
   async getModhash(): Promise<string | null> {
+    if (this.modhash !== null) return this.modhash
+
     const cookie = this.getCookieHeader()
     if (cookie === null) return null
 
@@ -60,7 +63,8 @@ export class BrowserAuth {
       })
       if (!response.ok) return null
       const data = (await response.json()) as { data?: { modhash?: string } }
-      return data.data?.modhash ?? null
+      this.modhash = data.data?.modhash ?? null
+      return this.modhash
     } catch {
       return null
     }
@@ -79,6 +83,7 @@ export class BrowserAuth {
 
   invalidateCache(): void {
     this.cookieHeader = null
+    this.modhash = null
   }
 }
 

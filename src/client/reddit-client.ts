@@ -193,6 +193,12 @@ export class RedditClient {
         if (cookie !== null) {
           headers["Cookie"] = cookie
         }
+        if (method !== "GET") {
+          const modhash = await browserAuth.getModhash()
+          if (modhash !== null) {
+            headers["X-Modhash"] = modhash
+          }
+        }
       }
 
       const first = await this.fetchWithRetry(url, options, headers, path, 0)
