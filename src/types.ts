@@ -1,4 +1,4 @@
-export type RedditAuthMode = "auto" | "authenticated" | "anonymous"
+export type RedditAuthMode = "auto" | "authenticated" | "anonymous" | "browser"
 
 export type RedditSafeMode = "off" | "standard" | "strict"
 

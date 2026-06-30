@@ -11,6 +11,8 @@ import crypto from "crypto"
 import type { Either } from "functype"
 import { Left, Option, Right, Try } from "functype"
 
+import { browserAuth } from "./browser-auth"
+
 import type {
   BotDisclosureConfig,
   ContentRecord,
@@ -141,6 +143,8 @@ export class RedditClient {
         return "https://oauth.reddit.com"
       case "anonymous":
         return "https://www.reddit.com"
+      case "browser":
+        return "https://www.reddit.com"
       case "auto":
         return this.hasCredentials ? "https://oauth.reddit.com" : "https://www.reddit.com"
     }
@@ -161,9 +165,15 @@ export class RedditClient {
         }
       }
 
-      const requiresAuth = this.authMode === "authenticated" || (this.authMode === "auto" && this.hasCredentials)
+      const requiresOAuth = (this.authMode === "authenticated" || (this.authMode === "auto" && this.hasCredentials))
+      const isBrowserAuth = this.authMode === "browser"
 
-      if (requiresAuth && (Date.now() >= this.tokenExpiry || !this.authenticated)) {
+      if (requiresOAuth && (Date.now() >= this.tokenExpiry || !this.authenticated)) {
+        const authResult = await this.authenticate()
+        authResult.orThrow()
+      }
+
+      if (isBrowserAuth && !this.authenticated) {
         const authResult = await this.authenticate()
         authResult.orThrow()
       }
@@ -174,8 +184,15 @@ export class RedditClient {
         ...(options.headers as Record<string, string> | undefined),
       }
 
-      if (requiresAuth && this.accessToken !== undefined) {
+      if (requiresOAuth && this.accessToken !== undefined) {
         headers["Authorization"] = `Bearer ${this.accessToken}`
+      }
+
+      if (isBrowserAuth) {
+        const cookie = browserAuth.getCookieHeader()
+        if (cookie !== null) {
+          headers["Cookie"] = cookie
+        }
       }
 
       const first = await this.fetchWithRetry(url, options, headers, path, 0)
@@ -204,6 +221,21 @@ export class RedditClient {
     if (this.authMode === "anonymous") {
       this.authenticated = false
       return Right(undefined as void)
+    }
+
+    if (this.authMode === "browser") {
+      if (browserAuth.hasAuth()) {
+        this.authenticated = true
+        return Right(undefined as void)
+      }
+      if (this.username !== undefined && this.password !== undefined) {
+        const loginAttempt = await Try.async(async (): Promise<void> => {
+          await browserAuth.login(this.username!, this.password!)
+          this.authenticated = true
+        })
+        return loginAttempt.toEither((error) => error)
+      }
+      return Left(new Error("Browser mode requires auth-state.json or REDDIT_USERNAME and REDDIT_PASSWORD"))
     }
 
     if (this.authMode === "authenticated" && !this.hasCredentials) {
@@ -269,6 +301,12 @@ export class RedditClient {
   }
 
   private validateWriteAccess(): void {
+    if (this.authMode === "browser") {
+      if (!browserAuth.hasAuth()) {
+        throw new NotAuthenticatedError("Browser auth required but no auth-state.json found. Run login first.")
+      }
+      return
+    }
     if (this.username === undefined || this.password === undefined) {
       if (this.authMode === "anonymous") {
         throw new NotAuthenticatedError(

@@ -135,9 +135,9 @@ async function setupRedditClient() {
   const safeMode = (process.env.REDDIT_SAFE_MODE ?? "standard") as RedditSafeMode
 
   // Validate auth mode
-  if (!["auto", "authenticated", "anonymous"].includes(authMode)) {
+  if (!["auto", "authenticated", "anonymous", "browser"].includes(authMode)) {
     console.error(`[Error] Invalid REDDIT_AUTH_MODE: ${authMode}`)
-    console.error("[Error] Valid options are: auto, authenticated, anonymous")
+    console.error("[Error] Valid options are: auto, authenticated, anonymous, browser")
     process.exit(1)
   }
 
@@ -154,7 +154,7 @@ async function setupRedditClient() {
     process.exit(1)
   }
 
-  // For auto/anonymous, credentials are optional
+  // For auto/anonymous/browser, credentials are optional
   const hasCredentials = Boolean(clientId && clientSecret)
 
   // Build user-agent (auto-format with username if available)
@@ -204,7 +204,16 @@ async function setupRedditClient() {
   console.error("[Setup] Reddit client initialized")
   console.error(`[Setup] Authentication mode: ${authMode}`)
 
-  if (authMode === "anonymous" || !hasCredentials) {
+  if (authMode === "browser") {
+    console.error("[Setup] Using browser cookie authentication")
+    const isConnected = await client.checkAuthentication()
+    if (isConnected) {
+      console.error("[Setup] ✓ Browser auth active (cookies loaded)")
+      console.error("[Setup] Write operations enabled via browser session")
+    } else {
+      console.error("[Setup] Browser auth: no saved session, will login on first request")
+    }
+  } else if (authMode === "anonymous" || !hasCredentials) {
     console.error("[Setup] Using anonymous Reddit API (~10 req/min)")
     console.error("[Setup] No authentication required - ready to use!")
   } else {
@@ -221,12 +230,14 @@ async function setupRedditClient() {
     console.error("[Setup] Using OAuth Reddit API (60-100 req/min)")
   }
 
-  if (username !== undefined && password !== undefined) {
-    console.error(`[Setup] ✓ User authenticated as: ${username}`)
-    console.error("[Setup] Write operations enabled (posting, replying, editing, deleting)")
-  } else {
-    console.error("[Setup] Read-only mode (no user credentials)")
-    console.error("[Setup] For write operations, set REDDIT_USERNAME and REDDIT_PASSWORD")
+  if (authMode !== "browser") {
+    if (username !== undefined && password !== undefined) {
+      console.error(`[Setup] ✓ User authenticated as: ${username}`)
+      console.error("[Setup] Write operations enabled (posting, replying, editing, deleting)")
+    } else {
+      console.error("[Setup] Read-only mode (no user credentials)")
+      console.error("[Setup] For write operations, set REDDIT_USERNAME and REDDIT_PASSWORD")
+    }
   }
 
   // Log safe mode status
