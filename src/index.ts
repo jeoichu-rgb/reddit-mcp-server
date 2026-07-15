@@ -13,6 +13,7 @@ import type {
   RetryConfig,
   SafeModeConfig,
   UserContent,
+  VoteRateLimitConfig,
 } from "./types"
 import { formatPostInfo, formatSubredditInfo, formatUserInfo } from "./utils/formatters"
 
@@ -188,6 +189,14 @@ async function setupRedditClient() {
     maxDelayMs: 60_000,
   }
 
+  // Vote pacing (always on, independent of REDDIT_SAFE_MODE): keeps voting slow and human-paced
+  const voteIntervalRaw = Number(process.env.REDDIT_VOTE_MIN_INTERVAL_MS ?? "12000")
+  const voteHourlyRaw = Number(process.env.REDDIT_VOTE_HOURLY_MAX ?? "30")
+  const voteLimitConfig: VoteRateLimitConfig = {
+    minIntervalMs: Number.isFinite(voteIntervalRaw) && voteIntervalRaw >= 0 ? Math.floor(voteIntervalRaw) : 12_000,
+    hourlyMax: Number.isFinite(voteHourlyRaw) && voteHourlyRaw > 0 ? Math.floor(voteHourlyRaw) : 30,
+  }
+
   const client = initializeRedditClient({
     clientId: clientId ?? "",
     clientSecret: clientSecret ?? "",
@@ -199,6 +208,7 @@ async function setupRedditClient() {
     botDisclosure: botDisclosureConfig,
     cache: cacheConfig,
     retry: retryConfig,
+    voteLimit: voteLimitConfig,
   })
 
   console.error("[Setup] Reddit client initialized")
@@ -258,6 +268,10 @@ async function setupRedditClient() {
     console.error("[Setup] Bot disclosure: off")
     console.error("[Setup] For Reddit policy compliance, consider REDDIT_BOT_DISCLOSURE=auto")
   }
+
+  console.error(
+    `[Setup] Vote pacing: min ${voteLimitConfig.minIntervalMs}ms between votes, max ${voteLimitConfig.hourlyMax}/hour`,
+  )
 }
 
 // OAuth token: generate once at startup, never expose in responses
@@ -1018,7 +1032,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1068,7 +1085,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1107,7 +1127,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1143,7 +1166,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1182,7 +1208,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1225,7 +1254,10 @@ server.addTool({
   execute: async (args) => {
     const client = unwrapClient()
 
-    if (process.env.REDDIT_AUTH_MODE !== "browser" && (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)) {
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
       // eslint-disable-next-line functype/prefer-either
       throw new Error(
         "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
@@ -1243,6 +1275,128 @@ server.addTool({
 The comment ${args.thing_id} has been updated with your new content.
 
 **Note**: An "edited" marker will appear on your comment to show it has been modified.`,
+    )
+  },
+})
+
+server.addTool({
+  name: "vote",
+  description:
+    "Cast your vote on a post or comment (requires user credentials). " +
+    "Only vote on content you have actually read in this session and formed a genuine opinion about — " +
+    "vote as a reader, not as a bot. Voting is paced (minimum interval between votes, hourly cap) and " +
+    "self-voting is blocked, per Reddit's Responsible Builder Policy. Use 'clear' to undo a previous vote.",
+  parameters: z.object({
+    thing_id: z
+      .string()
+      .describe(
+        "The full Reddit thing ID ('t3_abc123' for posts, 't1_abc123' for comments) or a bare post ID ('abc123', treated as a post). For comments the 't1_' prefix is required.",
+      ),
+    direction: z
+      .enum(["up", "down", "clear"])
+      .describe("'up' to upvote, 'down' to downvote, 'clear' to remove your existing vote"),
+  }),
+  execute: async (args) => {
+    const client = unwrapClient()
+
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
+      // eslint-disable-next-line functype/prefer-either
+      throw new Error(
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
+      )
+    }
+
+    const dir = args.direction === "up" ? 1 : args.direction === "down" ? -1 : 0
+    const result = await client.vote(args.thing_id, dir)
+    return result.fold(
+      (err) => {
+        // eslint-disable-next-line functype/prefer-either
+        throw new Error(`Failed to vote: ${err.message}`)
+      },
+      () => {
+        const verb = args.direction === "up" ? "Upvoted" : args.direction === "down" ? "Downvoted" : "Vote cleared on"
+        return `# ${verb} ${args.thing_id}
+
+Your vote has been recorded. You can review your voting history anytime at reddit.com → profile → History → Upvoted/Downvoted.`
+      },
+    )
+  },
+})
+
+server.addTool({
+  name: "save_post",
+  description:
+    "Save a post or comment to your Reddit saved list (requires user credentials). " +
+    "Saved items are private and can be browsed later via get_my_saved or reddit.com/user/me/saved. " +
+    "Note: Reddit's saved list is flat — there are no folders or categories.",
+  parameters: z.object({
+    thing_id: z
+      .string()
+      .describe(
+        "The full Reddit thing ID ('t3_abc123' for posts, 't1_abc123' for comments) or a bare post ID ('abc123', treated as a post). For comments the 't1_' prefix is required.",
+      ),
+  }),
+  execute: async (args) => {
+    const client = unwrapClient()
+
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
+      // eslint-disable-next-line functype/prefer-either
+      throw new Error(
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
+      )
+    }
+
+    const result = await client.saveItem(args.thing_id)
+    return result.fold(
+      (err) => {
+        // eslint-disable-next-line functype/prefer-either
+        throw new Error(`Failed to save: ${err.message}`)
+      },
+      () => `# Saved ${args.thing_id}
+
+Added to your saved list. Browse it with get_my_saved or at reddit.com/user/me/saved.`,
+    )
+  },
+})
+
+server.addTool({
+  name: "unsave_post",
+  description: "Remove a post or comment from your Reddit saved list (requires user credentials).",
+  parameters: z.object({
+    thing_id: z
+      .string()
+      .describe(
+        "The full Reddit thing ID ('t3_abc123' for posts, 't1_abc123' for comments) or a bare post ID ('abc123', treated as a post). For comments the 't1_' prefix is required.",
+      ),
+  }),
+  execute: async (args) => {
+    const client = unwrapClient()
+
+    if (
+      process.env.REDDIT_AUTH_MODE !== "browser" &&
+      (process.env.REDDIT_USERNAME === undefined || process.env.REDDIT_PASSWORD === undefined)
+    ) {
+      // eslint-disable-next-line functype/prefer-either
+      throw new Error(
+        "User authentication required. Please set REDDIT_USERNAME and REDDIT_PASSWORD, or use REDDIT_AUTH_MODE=browser.",
+      )
+    }
+
+    const result = await client.unsaveItem(args.thing_id)
+    return result.fold(
+      (err) => {
+        // eslint-disable-next-line functype/prefer-either
+        throw new Error(`Failed to unsave: ${err.message}`)
+      },
+      () => `# Unsaved ${args.thing_id}
+
+Removed from your saved list.`,
     )
   },
 })

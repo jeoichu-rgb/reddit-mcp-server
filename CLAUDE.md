@@ -37,6 +37,9 @@ This is a Reddit MCP (Model Context Protocol) server that provides tools for int
 - `edit_comment` - Edit your own Reddit comment
 - `delete_post` - **PERMANENTLY** delete your own Reddit post (cannot be undone!)
 - `delete_comment` - **PERMANENTLY** delete your own Reddit comment (cannot be undone!)
+- `vote` - Cast/clear your vote on a post or comment. Always paced (min interval + hourly cap, see `REDDIT_VOTE_MIN_INTERVAL_MS` / `REDDIT_VOTE_HOURLY_MAX`); self-voting is blocked. Vote only on content you actually read.
+- `save_post` - Save a post or comment to your (private, flat) Reddit saved list
+- `unsave_post` - Remove a post or comment from your saved list
 
 ### Server Modes
 
@@ -200,6 +203,10 @@ REDDIT_CACHE_MAX_MB=50           # Cache size cap in MB (LRU eviction beyond thi
 # Rate-Limit Retry (optional, defaults to 3)
 REDDIT_MAX_RETRIES=3             # Retries on HTTP 429 with Retry-After backoff (0 disables)
 
+# Vote pacing (always on, independent of REDDIT_SAFE_MODE)
+REDDIT_VOTE_MIN_INTERVAL_MS=12000  # Minimum ms between two votes (a faster vote waits out the remainder)
+REDDIT_VOTE_HOURLY_MAX=30          # Hard cap on votes per rolling hour (beyond it votes are rejected)
+
 # Transport Configuration
 # TRANSPORT_TYPE=stdio            # Uncomment for stdio mode (default: httpStream for node, stdio for npx/bin)
 PORT=3000                          # HTTP server port (default: 3000)
@@ -277,8 +284,9 @@ curl -H "Authorization: Bearer your-token" http://localhost:3000/mcp
 The following Reddit API capabilities are intentionally NOT implemented per Reddit's Responsible Builder Policy:
 
 - **Direct Messages/Private Messages**: Bots must get explicit consent for private communications
-- **Voting (upvote/downvote)**: Manipulating Reddit features like voting or karma is prohibited
 - **Bulk data export/scraping**: Reddit data must not be scraped for AI training or commercialized without approval
+
+**Voting** is implemented, but deliberately constrained so it cannot be used for the vote/karma manipulation the policy prohibits: votes are always paced (minimum interval between votes plus a rolling hourly cap, independent of `REDDIT_SAFE_MODE`), self-voting is rejected via an author check, and the tool description instructs the agent to vote only on content it has actually read — single-account, genuine-preference voting, not amplification.
 
 ## Testing Approach
 

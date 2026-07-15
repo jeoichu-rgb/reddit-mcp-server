@@ -1,6 +1,6 @@
-import { chromium } from "playwright"
 import fs from "fs"
 import path from "path"
+import { chromium } from "playwright"
 
 const AUTH_STATE_PATH = path.join(process.cwd(), "auth-state.json")
 
@@ -36,7 +36,9 @@ export class BrowserAuth {
       const raw = JSON.parse(fs.readFileSync(AUTH_STATE_PATH, "utf-8"))
 
       // Support both Cookie Editor export format (plain array) and Playwright storageState format ({cookies: [...]})
-      const cookies: Array<{ domain: string; name: string; value: string }> = Array.isArray(raw) ? raw : (raw.cookies ?? [])
+      const cookies: Array<{ domain: string; name: string; value: string }> = Array.isArray(raw)
+        ? raw
+        : (raw.cookies ?? [])
 
       const redditCookies = cookies.filter((c) => c.domain.includes("reddit.com"))
       if (redditCookies.length === 0) return null

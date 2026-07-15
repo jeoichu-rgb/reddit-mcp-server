@@ -89,6 +89,9 @@ claude mcp add --transport stdio reddit -- npx reddit-mcp-server
 | `edit_comment`   | Edit your own Reddit comment                |
 | `delete_post`    | Permanently delete your own post            |
 | `delete_comment` | Permanently delete your own comment         |
+| `vote`           | Upvote/downvote/clear your vote on a post or comment (paced; self-voting blocked) |
+| `save_post`      | Save a post or comment to your saved list   |
+| `unsave_post`    | Remove a post or comment from your saved list |
 
 ## Configuration
 
@@ -108,6 +111,8 @@ claude mcp add --transport stdio reddit -- npx reddit-mcp-server
 | `REDDIT_CACHE`          | No       | `on`           | In-memory caching of read requests: `on`, `off`               |
 | `REDDIT_CACHE_MAX_MB`   | No       | `50`           | Cache size cap in MB (LRU eviction beyond this)               |
 | `REDDIT_MAX_RETRIES`    | No       | `3`            | Retries on HTTP 429 with Retry-After backoff (`0` to disable) |
+| `REDDIT_VOTE_MIN_INTERVAL_MS` | No | `12000`        | Minimum spacing between two votes (a faster vote waits out the remainder) |
+| `REDDIT_VOTE_HOURLY_MAX` | No      | `30`           | Hard cap on votes per rolling hour (votes beyond it are rejected) |
 
 \*Required only if using `authenticated` mode.
 

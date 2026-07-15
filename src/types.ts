@@ -37,6 +37,13 @@ export type RetryConfig = {
   readonly maxDelayMs: number
 }
 
+export type VoteRateLimitConfig = {
+  /** Minimum spacing between two votes; a vote arriving earlier waits out the remainder (ms). */
+  readonly minIntervalMs: number
+  /** Hard cap on votes per rolling hour; votes beyond it are rejected, not queued. */
+  readonly hourlyMax: number
+}
+
 export type RedditClientConfig = {
   readonly clientId: string
   readonly clientSecret: string
@@ -48,6 +55,7 @@ export type RedditClientConfig = {
   readonly botDisclosure?: BotDisclosureConfig
   readonly cache?: CacheConfig
   readonly retry?: RetryConfig
+  readonly voteLimit?: VoteRateLimitConfig
 }
 
 export type RedditUser = {

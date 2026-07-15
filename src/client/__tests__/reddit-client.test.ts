@@ -1071,6 +1071,149 @@ describe("RedditClient", () => {
     })
   })
 
+  describe("vote", () => {
+    // Pacing disabled so tests run instantly; pacing itself is covered in the hourly-cap test.
+    const voteConfig: RedditClientConfig = {
+      ...mockConfig,
+      voteLimit: { minIntervalMs: 0, hourlyMax: 30 },
+    }
+
+    const mockAuth = () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "test-token", expires_in: 3600 }),
+      })
+    }
+
+    const mockInfoAuthor = (author: string) => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: { children: [{ kind: "t3", data: { author } }] } }),
+      })
+    }
+
+    it("should upvote a post", async () => {
+      const voteClient = new RedditClient(voteConfig)
+      mockAuth()
+      mockInfoAuthor("someoneelse")
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const result = await voteClient.vote("post123", 1)
+
+      expect(result.isRight()).toBe(true)
+      const voteCall = mockFetch.mock.calls[2]
+      expect(voteCall[0]).toBe("https://oauth.reddit.com/api/vote")
+      expect(voteCall[1].method).toBe("POST")
+      const body = new URLSearchParams(voteCall[1].body as string)
+      expect(body.get("id")).toBe("t3_post123")
+      expect(body.get("dir")).toBe("1")
+    })
+
+    it("should downvote a comment keeping the t1_ prefix", async () => {
+      const voteClient = new RedditClient(voteConfig)
+      mockAuth()
+      mockInfoAuthor("someoneelse")
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const result = await voteClient.vote("t1_comment456", -1)
+
+      expect(result.isRight()).toBe(true)
+      const body = new URLSearchParams(mockFetch.mock.calls[2][1].body as string)
+      expect(body.get("id")).toBe("t1_comment456")
+      expect(body.get("dir")).toBe("-1")
+    })
+
+    it("should refuse to vote on own content", async () => {
+      const voteClient = new RedditClient(voteConfig)
+      mockAuth()
+      mockInfoAuthor("testuser")
+
+      const result = await voteClient.vote("post123", 1)
+
+      expect(result.isLeft()).toBe(true)
+      expect(
+        result.fold(
+          (err) => err.message,
+          () => "",
+        ),
+      ).toContain("own content")
+      // No /api/vote call should have been made
+      const voteCalls = mockFetch.mock.calls.filter((c) => String(c[0]).includes("/api/vote"))
+      expect(voteCalls).toHaveLength(0)
+    })
+
+    it("should clear a vote without the self-vote check", async () => {
+      const voteClient = new RedditClient(voteConfig)
+      mockAuth()
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const result = await voteClient.vote("post123", 0)
+
+      expect(result.isRight()).toBe(true)
+      // auth + vote only: no /api/info lookup for dir=0
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      const body = new URLSearchParams(mockFetch.mock.calls[1][1].body as string)
+      expect(body.get("dir")).toBe("0")
+    })
+
+    it("should reject votes beyond the hourly cap", async () => {
+      const cappedClient = new RedditClient({
+        ...mockConfig,
+        voteLimit: { minIntervalMs: 0, hourlyMax: 1 },
+      })
+      mockAuth()
+      mockInfoAuthor("someoneelse")
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const first = await cappedClient.vote("post123", 1)
+      expect(first.isRight()).toBe(true)
+
+      const second = await cappedClient.vote("post456", 1)
+      expect(second.isLeft()).toBe(true)
+      expect(
+        second.fold(
+          (err) => err.message,
+          () => "",
+        ),
+      ).toContain("rate limit")
+    })
+  })
+
+  describe("saveItem/unsaveItem", () => {
+    it("should save a post", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "test-token", expires_in: 3600 }),
+      })
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const result = await client.saveItem("post123")
+
+      expect(result.isRight()).toBe(true)
+      const saveCall = mockFetch.mock.calls[1]
+      expect(saveCall[0]).toBe("https://oauth.reddit.com/api/save")
+      expect(saveCall[1].method).toBe("POST")
+      const body = new URLSearchParams(saveCall[1].body as string)
+      expect(body.get("id")).toBe("t3_post123")
+    })
+
+    it("should unsave a comment keeping the t1_ prefix", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "test-token", expires_in: 3600 }),
+      })
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+
+      const result = await client.unsaveItem("t1_comment456")
+
+      expect(result.isRight()).toBe(true)
+      const unsaveCall = mockFetch.mock.calls[1]
+      expect(unsaveCall[0]).toBe("https://oauth.reddit.com/api/unsave")
+      const body = new URLSearchParams(unsaveCall[1].body as string)
+      expect(body.get("id")).toBe("t1_comment456")
+    })
+  })
+
   describe("deletePost", () => {
     it("should delete a post", async () => {
       // Mock authentication
