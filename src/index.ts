@@ -1282,10 +1282,13 @@ The comment ${args.thing_id} has been updated with your new content.
 server.addTool({
   name: "vote",
   description:
-    "Cast your vote on a post or comment (requires user credentials). " +
+    "Upvote, downvote, or un-vote a post or comment (requires user credentials). " +
+    "All three actions go through this one tool via `direction`: 'up' casts an upvote, 'down' casts a downvote, " +
+    "and 'clear' cancels whichever vote you previously cast (use it to undo a mistaken up or down vote). " +
+    "Downvoting content you genuinely disagree with or dislike is a normal, fully supported action — not just upvotes. " +
     "Only vote on content you have actually read in this session and formed a genuine opinion about — " +
     "vote as a reader, not as a bot. Voting is paced (minimum interval between votes, hourly cap) and " +
-    "self-voting is blocked, per Reddit's Responsible Builder Policy. Use 'clear' to undo a previous vote.",
+    "self-voting is blocked, per Reddit's Responsible Builder Policy.",
   parameters: z.object({
     thing_id: z
       .string()
@@ -1294,7 +1297,9 @@ server.addTool({
       ),
     direction: z
       .enum(["up", "down", "clear"])
-      .describe("'up' to upvote, 'down' to downvote, 'clear' to remove your existing vote"),
+      .describe(
+        "'up' = upvote, 'down' = downvote, 'clear' = cancel your existing vote on this thing (works for undoing both up and down votes)",
+      ),
   }),
   execute: async (args) => {
     const client = unwrapClient()
