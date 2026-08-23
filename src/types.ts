@@ -88,6 +88,8 @@ export type RedditPost = {
   readonly isSelf: boolean
   readonly linkFlairText?: string
   readonly permalink: string
+  /** User's vote state: true = upvoted, false = downvoted, undefined = no vote (or not authenticated). */
+  readonly liked?: boolean
 }
 
 export type RedditComment = {
@@ -304,6 +306,8 @@ export type RedditApiPostData = {
   // eslint-disable-next-line functype/prefer-option -- wire format: Reddit's JSON API returns literal null here
   readonly link_flair_text: string | null
   readonly permalink: string
+  // eslint-disable-next-line functype/prefer-option -- wire format: Reddit's JSON API returns literal null for "no vote"
+  readonly likes: boolean | null
   readonly [key: string]: unknown
 }
 

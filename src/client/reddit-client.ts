@@ -83,6 +83,8 @@ function parsePostData(post: RedditApiPostData): RedditPost {
     isSelf: post.is_self,
     linkFlairText: post.link_flair_text ?? undefined,
     permalink: post.permalink,
+    // Reddit returns likes as true/false/null; map null → undefined for cleaner TS optionals.
+    liked: post.likes === true ? true : post.likes === false ? false : undefined,
   }
 }
 

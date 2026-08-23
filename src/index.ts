@@ -297,6 +297,8 @@ Available capabilities:
 
 For write operations (posting, replying, editing, deleting), ensure REDDIT_USERNAME and REDDIT_PASSWORD are configured.
 
+Seen-post tracking: opening a post (get_reddit_post) auto-upvotes it. Subsequent browse_subreddit / get_top_posts calls mark upvoted posts with [SEEN]. When you encounter [SEEN] posts in a listing, skip them — they are posts you already read in a previous session. Use skip_seen=true to filter them out server-side, or simply do not open them again. If an entire subreddit returns only [SEEN] posts, move on to the next subreddit or page instead of re-reading old content.
+
 IMPORTANT - Reddit Responsible Builder Policy compliance:
 - Data retrieved via these tools must NOT be used for AI model training without Reddit's written approval
 - Data must NOT be sold, licensed, or commercially redistributed
@@ -606,10 +608,18 @@ ${commentSummaries}${nextPageHint(page.after)}`
 server.addTool({
   name: "get_reddit_post",
   description:
-    "Get detailed information about a specific Reddit post including content, stats, and engagement analysis",
+    "Get detailed information about a specific Reddit post including content, stats, and engagement analysis. " +
+    "When REDDIT_AUTO_UPVOTE is not 'false' (default: on), opening a post automatically upvotes it — " +
+    "this doubles as a read receipt so browse_subreddit/get_top_posts can mark it [SEEN] next time.",
   parameters: z.object({
     subreddit: z.string().describe("The subreddit name (without r/ prefix)"),
     post_id: z.string().describe("The Reddit post ID"),
+    auto_upvote: z
+      .boolean()
+      .optional()
+      .describe(
+        "Override auto-upvote for this call. When omitted, falls back to REDDIT_AUTO_UPVOTE env var (default: true).",
+      ),
   }),
   execute: async (args) => {
     const client = unwrapClient()
@@ -620,7 +630,25 @@ server.addTool({
         // eslint-disable-next-line functype/prefer-either
         throw new Error(`Failed to get post: ${err.message}`)
       },
-      (post) => {
+      async (post) => {
+        // Auto-upvote: skip if already upvoted (liked === true)
+        const autoUpvote = args.auto_upvote ?? (process.env.REDDIT_AUTO_UPVOTE ?? "true") !== "false"
+        let upvoteNote = ""
+        if (autoUpvote && post.liked !== true) {
+          const hasAuth =
+            process.env.REDDIT_AUTH_MODE === "browser" ||
+            (process.env.REDDIT_USERNAME !== undefined && process.env.REDDIT_PASSWORD !== undefined)
+          if (hasAuth) {
+            const voteResult = await client.vote(post.id, 1)
+            upvoteNote = voteResult.fold(
+              (err) => `\n\n_Auto-upvote failed: ${err.message}_`,
+              () => "\n\n_✓ Auto-upvoted_",
+            )
+          }
+        } else if (autoUpvote && post.liked === true) {
+          upvoteNote = "\n\n_Already upvoted_"
+        }
+
         const formattedPost = formatPostInfo(post)
 
         return `# Post from r/${formattedPost.subreddit}
@@ -651,7 +679,7 @@ ${formattedPost.content}
 - ${formattedPost.engagementAnalysis.replace(/\n {2}- /g, "\n- ")}
 
 ## Best Time to Engage
-${formattedPost.bestTimeToEngage}`
+${formattedPost.bestTimeToEngage}${upvoteNote}`
       },
     )
   },
@@ -659,7 +687,9 @@ ${formattedPost.bestTimeToEngage}`
 
 server.addTool({
   name: "get_top_posts",
-  description: "Get top posts from a subreddit or from the Reddit home feed",
+  description:
+    "Get top posts from a subreddit or from the Reddit home feed. " +
+    "Posts you have previously upvoted are marked [SEEN]; set skip_seen to filter them out.",
   parameters: z.object({
     subreddit: z.string().optional().describe("The subreddit name (without r/ prefix). Leave empty for home feed"),
     time_filter: z
@@ -671,6 +701,10 @@ server.addTool({
       .string()
       .optional()
       .describe("Pagination cursor: pass the `after` value from a previous page to fetch the next page"),
+    skip_seen: z
+      .boolean()
+      .default(false)
+      .describe("If true, omit posts you have already upvoted (i.e. previously read)"),
   }),
   execute: async (args) => {
     const client = unwrapClient()
@@ -682,34 +716,43 @@ server.addTool({
         throw new Error(`Failed to get top posts: ${err.message}`)
       },
       (page) => {
-        const posts = page.items
+        let posts = [...page.items]
+        const location = Option(args.subreddit).fold(
+          () => "home feed",
+          (sr) => `r/${sr}`,
+        )
+
+        const seenCount = posts.filter((p) => p.liked === true).length
+        if (args.skip_seen && seenCount > 0) {
+          posts = posts.filter((p) => p.liked !== true)
+        }
+
         if (posts.length === 0) {
-          const location = Option(args.subreddit).fold(
-            () => "home feed",
-            (sr) => `r/${sr}`,
-          )
-          return `No posts found in ${location} for the specified time period.`
+          const skippedNote = seenCount > 0 ? ` (${seenCount} seen posts skipped)` : ""
+          return `No posts found in ${location} for the specified time period.${skippedNote}`
         }
 
         const formattedPosts = posts.map(formatPostInfo)
         const postSummaries = formattedPosts
-          .map(
-            (post, index) => `### ${index + 1}. ${post.title}
+          .map((post, index) => {
+            const rawPost = posts[index]
+            const seenTag = rawPost.liked === true ? " [SEEN]" : ""
+            return `### ${index + 1}. ${post.title}${seenTag}
 - Author: u/${post.author}
 - Score: ${post.stats.score.toLocaleString()} (${(post.stats.upvoteRatio * 100).toFixed(1)}% upvoted)
 - Comments: ${post.stats.comments.toLocaleString()}
 - Posted: ${post.metadata.posted}
-- Link: ${post.links.shortLink}`,
-          )
+- Link: ${post.links.shortLink}`
+          })
           .join("\n\n")
 
-        const location = Option(args.subreddit).fold(
-          () => "Home Feed",
-          (sr) => `r/${sr}`,
-        )
+        const seenSummary =
+          seenCount > 0
+            ? `\n\n_${seenCount} previously seen post(s)${args.skip_seen ? " omitted" : " marked [SEEN]"}_`
+            : ""
         return `# Top Posts from ${location} (${args.time_filter})
 
-${postSummaries}${nextPageHint(page.after)}`
+${postSummaries}${seenSummary}${nextPageHint(page.after)}`
       },
     )
   },
@@ -719,7 +762,8 @@ server.addTool({
   name: "browse_subreddit",
   description:
     "Browse posts from a subreddit or the Reddit home feed with a sort order (hot, new, top, rising, controversial). " +
-    "The time_filter only applies to top and controversial sorts.",
+    "The time_filter only applies to top and controversial sorts. " +
+    "Posts you have previously upvoted are marked [SEEN] (upvote = read receipt); set skip_seen to filter them out.",
   parameters: z.object({
     subreddit: z.string().optional().describe("The subreddit name (without r/ prefix). Leave empty for home feed"),
     sort: z.enum(["hot", "new", "top", "rising", "controversial"]).default("hot").describe("Sort order for posts"),
@@ -732,6 +776,10 @@ server.addTool({
       .string()
       .optional()
       .describe("Pagination cursor: pass the `after` value from a previous page to fetch the next page"),
+    skip_seen: z
+      .boolean()
+      .default(false)
+      .describe("If true, omit posts you have already upvoted (i.e. previously read)"),
   }),
   execute: async (args) => {
     const client = unwrapClient()
@@ -749,32 +797,44 @@ server.addTool({
         throw new Error(`Failed to browse subreddit: ${err.message}`)
       },
       (page) => {
-        const posts = page.items
+        let posts = [...page.items]
         const location = Option(args.subreddit).fold(
           () => "home feed",
           (sr) => `r/${sr}`,
         )
+
+        // Upvoted posts count as "seen"
+        const seenCount = posts.filter((p) => p.liked === true).length
+        if (args.skip_seen && seenCount > 0) {
+          posts = posts.filter((p) => p.liked !== true)
+        }
+
         if (posts.length === 0) {
-          return `No posts found in ${location}.`
+          const skippedNote = seenCount > 0 ? ` (${seenCount} seen posts skipped)` : ""
+          return `No new posts found in ${location}.${skippedNote}`
         }
 
         const formattedPosts = posts.map(formatPostInfo)
         const postSummaries = formattedPosts
-          .map(
-            (post, index) => `### ${index + 1}. ${post.title}
+          .map((post, index) => {
+            const rawPost = posts[index]
+            const seenTag = rawPost.liked === true ? " [SEEN]" : ""
+            return `### ${index + 1}. ${post.title}${seenTag}
 - Author: u/${post.author}
 - Score: ${post.stats.score.toLocaleString()} (${(post.stats.upvoteRatio * 100).toFixed(1)}% upvoted)
 - Comments: ${post.stats.comments.toLocaleString()}
 - Posted: ${post.metadata.posted}
-- Link: ${post.links.shortLink}`,
-          )
+- Link: ${post.links.shortLink}`
+          })
           .join("\n\n")
 
         const timeSuffix = args.sort === "top" || args.sort === "controversial" ? `, ${args.time_filter}` : ""
         const heading = location === "home feed" ? "Home Feed" : location
+        const seenSummary =
+          seenCount > 0 ? `\n\n_${seenCount} previously seen post(s)${args.skip_seen ? " omitted" : " marked [SEEN]"}_` : ""
         return `# ${args.sort} posts from ${heading} (${args.sort}${timeSuffix})
 
-${postSummaries}${nextPageHint(page.after)}`
+${postSummaries}${seenSummary}${nextPageHint(page.after)}`
       },
     )
   },
