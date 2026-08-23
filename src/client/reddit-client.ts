@@ -1090,6 +1090,11 @@ export class RedditClient {
       if (!response.ok) {
         throw new HttpError(response.status, `Failed to vote: HTTP ${response.status}`)
       }
+
+      // A vote changes the user's `likes` state on the thing, so any cached
+      // listing that includes it is now stale.  The simplest correct fix is to
+      // drop the whole cache — listings are cheap to re-fetch.
+      this.cache?.clear()
     })
 
     return attempt.toEither((error) => classifyRedditError(error))

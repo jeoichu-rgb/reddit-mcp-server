@@ -98,6 +98,12 @@ export class ResponseCache {
     this.evictUntilWithinBudget()
   }
 
+  /** Drop all cached entries (e.g. after a vote changes the user's liked state). */
+  clear(): void {
+    this.entries.clear()
+    this.currentBytes = 0
+  }
+
   private evictUntilWithinBudget(): void {
     while (this.currentBytes > this.maxBytes) {
       const oldestKey = this.entries.keys().next().value
