@@ -68,9 +68,9 @@ claude mcp add --transport stdio reddit -- npx reddit-mcp-server
 
 | Tool                      | Description                                                                 |
 | ------------------------- | --------------------------------------------------------------------------- |
-| `get_reddit_post`         | Get a specific Reddit post with engagement analysis                         |
-| `get_top_posts`           | Get top posts from a subreddit or home feed                                 |
-| `browse_subreddit`        | Browse a subreddit/home feed by sort (hot, new, top, rising, controversial) |
+| `get_reddit_post`         | Get a specific Reddit post with engagement analysis; auto-upvotes the post as a read receipt |
+| `get_top_posts`           | Get top posts from a subreddit or home feed; marks upvoted posts `[SEEN]`   |
+| `browse_subreddit`        | Browse a subreddit/home feed by sort (hot, new, top, rising, controversial); marks upvoted posts `[SEEN]` |
 | `get_user_info`           | Get detailed information about a Reddit user                                |
 | `get_user_posts`          | Get posts submitted by a specific user                                      |
 | `get_user_comments`       | Get comments made by a specific user                                        |
@@ -113,6 +113,7 @@ claude mcp add --transport stdio reddit -- npx reddit-mcp-server
 | `REDDIT_MAX_RETRIES`    | No       | `3`            | Retries on HTTP 429 with Retry-After backoff (`0` to disable) |
 | `REDDIT_VOTE_MIN_INTERVAL_MS` | No | `12000`        | Minimum spacing between two votes (a faster vote waits out the remainder) |
 | `REDDIT_VOTE_HOURLY_MAX` | No      | `30`           | Hard cap on votes per rolling hour (votes beyond it are rejected) |
+| `REDDIT_AUTO_UPVOTE`    | No       | `true`         | Auto-upvote posts when opened via `get_reddit_post` (doubles as read receipt for `[SEEN]` tracking) |
 
 \*Required only if using `authenticated` mode.
 
@@ -197,6 +198,26 @@ Customize the footer with `REDDIT_BOT_FOOTER`:
 export REDDIT_BOT_DISCLOSURE=auto
 export REDDIT_BOT_FOOTER=$'\n\n---\n^(🤖 Custom bot footer text)'
 ```
+
+## Seen Post Tracking
+
+When browsing Reddit across multiple sessions, the server uses Reddit's own upvote state as a read receipt — no local database needed.
+
+**How it works:**
+
+1. `get_reddit_post` automatically upvotes the post when you open it (unless already upvoted)
+2. `browse_subreddit` and `get_top_posts` check each post's upvote state and mark upvoted posts with `[SEEN]`
+3. Pass `skip_seen=true` to filter out seen posts server-side, so only new content is returned
+
+**Disable auto-upvote:**
+
+```bash
+export REDDIT_AUTO_UPVOTE=false
+```
+
+Or override per-call with the `auto_upvote` parameter on `get_reddit_post`.
+
+> **Note:** Requires authenticated mode — anonymous sessions cannot track vote state.
 
 ## Authentication Modes
 
@@ -344,7 +365,7 @@ This server is designed with [Reddit's Responsible Builder Policy](https://suppo
 - **Safe mode on by default** — rate limiting and duplicate detection prevent spam
 - **Cross-subreddit duplicate detection** — blocks identical content across subreddits
 - **Bot disclosure support** — optional automated footer for transparency
-- **No voting/karma manipulation** — upvote/downvote tools are intentionally excluded
+- **No voting/karma manipulation** — vote tool is rate-limited and paced; auto-upvote serves as read receipt, not engagement farming
 - **No private messaging** — DM tools are intentionally excluded
 - **Policy-aware AI instructions** — MCP server instructions remind AI assistants of data usage restrictions
 
