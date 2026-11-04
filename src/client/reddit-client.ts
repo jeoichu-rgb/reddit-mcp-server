@@ -42,9 +42,11 @@ import type {
   RetryConfig,
   SafeModeConfig,
   UserContent,
+  VoteRateLimitConfig,
 } from "../types"
 import { normalizeFullname, normalizeSubreddit, normalizeThingId, normalizeUsername } from "../utils/reddit-identifiers"
 import { ArcticShiftClient, isArchiveCursor } from "./arctic-shift-client"
+import { browserAuth } from "./browser-auth"
 import type { RedditError } from "./errors"
 import {
   ApiError,
@@ -101,6 +103,8 @@ export class RedditClient {
   // No OAuth credentials: reads go to RSS (ranked listings) and the Arctic Shift archive.
   readonly keyless: boolean
 
+  private readonly voteLimit: VoteRateLimitConfig
+
   // Mutable state — inherent to a stateful HTTP client with token refresh
 
   private accessToken?: string
@@ -112,6 +116,10 @@ export class RedditClient {
   private lastWriteTime: number = 0
 
   private recentContentRecords: ContentRecord[] = []
+
+  private voteTimestamps: number[] = []
+
+  private cachedUsername?: string
 
   constructor(config: RedditClientConfig) {
     this.clientId = config.clientId
@@ -136,7 +144,12 @@ export class RedditClient {
     this.cache = config.cache?.enabled === true ? new ResponseCache({ maxBytes: config.cache.maxBytes }) : undefined
 
     this.retry = config.retry ?? { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 60000 }
-    this.keyless = this.authMode === "anonymous" || (this.authMode === "auto" && !this.hasCredentials)
+    this.keyless =
+      this.authMode === "anonymous" ||
+      this.authMode === "browser" ||
+      (this.authMode === "auto" && !this.hasCredentials)
+
+    this.voteLimit = config.voteLimit ?? { minIntervalMs: 12_000, hourlyMax: 30 }
     this.rssClient = new RssClient(this.userAgent)
     this.arctic = new ArcticShiftClient(this.userAgent, this.cache)
   }
@@ -146,6 +159,8 @@ export class RedditClient {
       case "authenticated":
         return "https://oauth.reddit.com"
       case "anonymous":
+        return "https://www.reddit.com"
+      case "browser":
         return "https://www.reddit.com"
       case "auto":
         return this.hasCredentials ? "https://oauth.reddit.com" : "https://www.reddit.com"
@@ -167,9 +182,15 @@ export class RedditClient {
         }
       }
 
-      const requiresAuth = this.authMode === "authenticated" || (this.authMode === "auto" && this.hasCredentials)
+      const requiresOAuth = this.authMode === "authenticated" || (this.authMode === "auto" && this.hasCredentials)
+      const isBrowserAuth = this.authMode === "browser"
 
-      if (requiresAuth && (Date.now() >= this.tokenExpiry || !this.authenticated)) {
+      if (requiresOAuth && (Date.now() >= this.tokenExpiry || !this.authenticated)) {
+        const authResult = await this.authenticate()
+        authResult.orThrow()
+      }
+
+      if (isBrowserAuth && !this.authenticated) {
         const authResult = await this.authenticate()
         authResult.orThrow()
       }
@@ -180,8 +201,21 @@ export class RedditClient {
         ...(options.headers as Record<string, string> | undefined),
       }
 
-      if (requiresAuth && this.accessToken !== undefined) {
+      if (requiresOAuth && this.accessToken !== undefined) {
         headers["Authorization"] = `Bearer ${this.accessToken}`
+      }
+
+      if (isBrowserAuth) {
+        const cookie = browserAuth.getCookieHeader()
+        if (cookie !== null) {
+          headers["Cookie"] = cookie
+        }
+        if (method !== "GET") {
+          const modhash = await browserAuth.getModhash()
+          if (modhash !== null) {
+            headers["X-Modhash"] = modhash
+          }
+        }
       }
 
       const first = await this.fetchWithRetry(url, options, headers, path, 0)
@@ -210,6 +244,21 @@ export class RedditClient {
     if (this.authMode === "anonymous") {
       this.authenticated = false
       return Right(undefined as void)
+    }
+
+    if (this.authMode === "browser") {
+      if (browserAuth.hasAuth()) {
+        this.authenticated = true
+        return Right(undefined as void)
+      }
+      if (this.username !== undefined && this.password !== undefined) {
+        const loginAttempt = await Try.async(async (): Promise<void> => {
+          await browserAuth.login(this.username!, this.password!)
+          this.authenticated = true
+        })
+        return loginAttempt.toEither((error) => error)
+      }
+      return Left(new Error("Browser mode requires auth-state.json or REDDIT_USERNAME and REDDIT_PASSWORD"))
     }
 
     if (this.authMode === "authenticated" && !this.hasCredentials) {
@@ -275,6 +324,12 @@ export class RedditClient {
   }
 
   private validateWriteAccess(): void {
+    if (this.authMode === "browser") {
+      if (!browserAuth.hasAuth()) {
+        throw new NotAuthenticatedError("Browser auth required but no auth-state.json found. Run login first.")
+      }
+      return
+    }
     if (this.keyless) {
       throw new NotAuthenticatedError(
         "Write operations require OAuth credentials (REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET) " +
@@ -1046,6 +1101,103 @@ export class RedditClient {
 
   async unsaveContent(thingId: string): Promise<Either<RedditError, boolean>> {
     return this.setSaved(thingId, false)
+  }
+
+  // Who am I? Prefers the configured username; in browser (cookie) mode falls back to
+  // /api/me.json once and caches the answer. Returns undefined when identity is unknowable.
+  // eslint-disable-next-line functype/prefer-option -- undefined intentionally means "unknowable, skip the check"
+  private async resolveOwnUsername(): Promise<string | undefined> {
+    if (this.username !== undefined) return this.username
+    if (this.cachedUsername !== undefined) return this.cachedUsername
+    const attempt = await Try.async(async (): Promise<string | undefined> => {
+      const response = (await this.makeRequest("/api/me.json")).orThrow()
+      if (!response.ok) return undefined
+      const json = (await response.json()) as { readonly data?: { readonly name?: string } }
+      return json.data?.name
+    })
+    this.cachedUsername = attempt.orElse(undefined)
+    return this.cachedUsername
+  }
+
+  // Fetch the author of a post/comment fullname via /api/info.
+  // eslint-disable-next-line functype/prefer-option -- undefined intentionally means "cannot verify, proceed"
+  private async fetchThingAuthor(fullname: string): Promise<string | undefined> {
+    const attempt = await Try.async(async (): Promise<string | undefined> => {
+      const response = (await this.makeRequest(`/api/info.json?id=${fullname}`)).orThrow()
+      if (!response.ok) return undefined
+      const json = (await response.json()) as RedditApiInfoResponse
+      return json.data.children[0]?.data.author
+    })
+    return attempt.orElse(undefined)
+  }
+
+  // Anti-manipulation pacing: votes closer together than minIntervalMs wait out the remainder;
+  // votes beyond hourlyMax in a rolling hour are rejected.
+  private async enforceVoteRateLimit(): Promise<void> {
+    const hourAgo = Date.now() - 3_600_000
+    this.voteTimestamps = this.voteTimestamps.filter((t) => t > hourAgo)
+
+    if (this.voteTimestamps.length >= this.voteLimit.hourlyMax) {
+      const oldestExpiry = Math.ceil((this.voteTimestamps[0] + 3_600_000 - Date.now()) / 60_000)
+      throw new ValidationError(
+        `Vote rate limit reached (${this.voteLimit.hourlyMax} votes per hour). ` +
+          `Next vote possible in ~${oldestExpiry} min.`,
+      )
+    }
+
+    const lastVote = this.voteTimestamps.at(-1)
+    if (lastVote !== undefined) {
+      const elapsed = Date.now() - lastVote
+      if (elapsed < this.voteLimit.minIntervalMs) {
+        const waitTime = this.voteLimit.minIntervalMs - elapsed
+        console.error(`[VoteLimit] Pacing: waiting ${waitTime}ms before next vote`)
+        await new Promise((resolve) => setTimeout(resolve, waitTime))
+      }
+    }
+
+    this.voteTimestamps.push(Date.now())
+  }
+
+  async vote(thingId: string, dir: 1 | 0 | -1): Promise<Either<RedditError, void>> {
+    const attempt = await Try.async(async (): Promise<void> => {
+      this.validateWriteAccess()
+
+      const fullThingId = normalizeFullname(thingId, "t3")
+
+      if (dir !== 0) {
+        await this.enforceVoteRateLimit()
+
+        // Voting on your own content is karma manipulation (Reddit Responsible Builder Policy).
+        const [author, self] = await Promise.all([this.fetchThingAuthor(fullThingId), this.resolveOwnUsername()])
+        if (author !== undefined && author.toLowerCase() === self?.toLowerCase()) {
+          throw new ValidationError(
+            "Refusing to vote on your own content — self-voting is karma manipulation under Reddit's Responsible Builder Policy.",
+          )
+        }
+      }
+
+      const params = new URLSearchParams()
+      params.append("id", fullThingId)
+      params.append("dir", dir.toString())
+
+      const response = (
+        await this.makeRequest("/api/vote", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+        })
+      ).orThrow()
+
+      if (!response.ok) {
+        throw new HttpError(response.status, `Failed to vote: HTTP ${response.status}`)
+      }
+
+      // A vote changes the user's `likes` state on the thing, so any cached
+      // listing that includes it is now stale.
+      this.cache?.clear()
+    })
+
+    return attempt.toEither((error) => classifyRedditError(error))
   }
 
   async searchReddit(

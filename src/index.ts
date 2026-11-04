@@ -4,6 +4,7 @@ import { Option } from "functype"
 import { type ContentResult, createServer, getRequestHeader } from "somamcp/node"
 import { z } from "zod"
 
+import { browserAuth } from "./client/browser-auth"
 import { getRedditClient, initializeRedditClient } from "./client/reddit-client"
 import type {
   BotDisclosureConfig,
@@ -16,6 +17,7 @@ import type {
   RetryConfig,
   SafeModeConfig,
   UserContent,
+  VoteRateLimitConfig,
 } from "./types"
 import { hasUserCredentials, readEnv } from "./utils/env"
 import {
@@ -220,9 +222,9 @@ async function setupRedditClient() {
   const safeMode = readEnv("REDDIT_SAFE_MODE").orElse("standard") as RedditSafeMode
 
   // Validate auth mode
-  if (!["auto", "authenticated", "anonymous"].includes(authMode)) {
+  if (!["auto", "authenticated", "anonymous", "browser"].includes(authMode)) {
     console.error(`[Error] Invalid REDDIT_AUTH_MODE: ${authMode}`)
-    console.error("[Error] Valid options are: auto, authenticated, anonymous")
+    console.error("[Error] Valid options are: auto, authenticated, anonymous, browser")
     process.exit(1)
   }
 
@@ -273,6 +275,14 @@ async function setupRedditClient() {
     maxDelayMs: 60_000,
   }
 
+  // Vote pacing (always on, independent of REDDIT_SAFE_MODE)
+  const voteIntervalRaw = Number(readEnv("REDDIT_VOTE_MIN_INTERVAL_MS").orElse("12000"))
+  const voteHourlyRaw = Number(readEnv("REDDIT_VOTE_HOURLY_MAX").orElse("30"))
+  const voteLimitConfig: VoteRateLimitConfig = {
+    minIntervalMs: Number.isFinite(voteIntervalRaw) && voteIntervalRaw >= 0 ? Math.floor(voteIntervalRaw) : 12_000,
+    hourlyMax: Number.isFinite(voteHourlyRaw) && voteHourlyRaw > 0 ? Math.floor(voteHourlyRaw) : 30,
+  }
+
   const client = initializeRedditClient({
     clientId: clientId ?? "",
     clientSecret: clientSecret ?? "",
@@ -284,6 +294,7 @@ async function setupRedditClient() {
     botDisclosure: botDisclosureConfig,
     cache: cacheConfig,
     retry: retryConfig,
+    voteLimit: voteLimitConfig,
   })
 
   console.error("[Setup] Reddit client initialized")
@@ -342,6 +353,21 @@ async function setupRedditClient() {
     console.error("[Setup] Bot disclosure: off")
     console.error("[Setup] For Reddit policy compliance, consider REDDIT_BOT_DISCLOSURE=auto")
   }
+
+  // Browser auth status
+  if (authMode === "browser") {
+    if (browserAuth.hasAuth()) {
+      console.error("[Setup] ✓ Browser auth: cookies loaded from auth-state.json")
+    } else {
+      console.error("[Setup] ✗ Browser auth: no cookies found — place auth-state.json in the working directory")
+      console.error("[Setup]   (Cookie Editor JSON export or Playwright storageState format)")
+    }
+  }
+
+  // Vote pacing
+  console.error(
+    `[Setup] Vote pacing: min ${voteLimitConfig.minIntervalMs}ms between votes, max ${voteLimitConfig.hourlyMax}/hour`,
+  )
 }
 
 // OAuth token: generate once at startup, never expose in responses
@@ -386,10 +412,13 @@ Available capabilities:
 - Create posts and reply to posts/comments (with authentication)
 - Edit your own posts and comments (with authentication)
 - Save or unsave posts and comments (with authentication)
+- Vote on posts and comments (with authentication or browser auth)
 - Delete your own posts and comments (with authentication)
 - Analyze engagement metrics and community insights
 
 For write operations (posting, replying, editing, deleting), ensure REDDIT_USERNAME and REDDIT_PASSWORD are configured.
+
+Seen-post tracking: opening a post (get_reddit_post) auto-upvotes it. Subsequent browse_subreddit / get_top_posts calls mark upvoted posts with [SEEN]. When you encounter [SEEN] posts in a listing, skip them — they are posts you already read in a previous session. Use skip_seen=true to filter them out server-side, or simply do not open them again. If an entire subreddit returns only [SEEN] posts, move on to the next subreddit or page instead of re-reading old content.
 
 IMPORTANT - Reddit Responsible Builder Policy compliance:
 - Data retrieved via these tools must NOT be used for AI model training without Reddit's written approval
@@ -747,6 +776,12 @@ server.addTool({
     return result.fold<string | ContentResult>(
       (err) => toolError(`Failed to get post: ${err.message}`),
       (post) => {
+        // Auto-upvote on open: marks the post as [SEEN] in future listings.
+        // Fire-and-forget; errors are silently ignored (keyless / rate-limited / self-vote).
+        if (!client.keyless && post.liked !== true) {
+          client.vote(`t3_${post.id}`, 1).catch(() => {})
+        }
+
         const formattedPost = formatPostInfo(post)
 
         return `# Post from r/${formattedPost.subreddit}
@@ -812,6 +847,12 @@ server.addTool({
       .string()
       .optional()
       .describe("Forward pagination cursor: the `after` value from a previous call. Omit for the first page."),
+    skip_seen: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true, filter out posts you have already upvoted (opened via get_reddit_post). Useful for catching up on new content only.",
+      ),
   }),
   execute: async (args) => {
     const client = unwrapClient()
@@ -820,18 +861,26 @@ server.addTool({
     return result.fold<string | ContentResult>(
       (err) => toolError(`Failed to get top posts: ${err.message}`),
       (page) => {
-        const posts = page.items
+        let posts = page.items
+        if (args.skip_seen) {
+          posts = posts.filter((p) => p.liked !== true)
+        }
         if (posts.length === 0) {
           const location = Option(args.subreddit).fold(
             () => "home feed",
             (sr) => `r/${sr}`,
           )
-          return `No posts found in ${location} for the specified time period.`
+          return args.skip_seen
+            ? `All posts in ${location} for the specified time period have been seen. Try a different time range or the next page.`
+            : `No posts found in ${location} for the specified time period.`
         }
 
         const postSummaries = posts
-          .map(formatPostInfo)
-          .map((post, index) => formatPostSummary(post, index, page.source))
+          .map((post) => ({ formatted: formatPostInfo(post), seen: post.liked === true }))
+          .map(({ formatted, seen }, index) => {
+            const seenTag = seen ? " **[SEEN]**" : ""
+            return formatPostSummary(formatted, index, page.source) + seenTag
+          })
           .join("\n\n")
 
         const location = Option(args.subreddit).fold(
@@ -877,6 +926,12 @@ server.addTool({
       .string()
       .optional()
       .describe("Forward pagination cursor: the `after` value from a previous call. Omit for the first page."),
+    skip_seen: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true, filter out posts you have already upvoted (opened via get_reddit_post). Useful for catching up on new content only.",
+      ),
   }),
   execute: async (args) => {
     const client = unwrapClient()
@@ -891,18 +946,26 @@ server.addTool({
     return result.fold<string | ContentResult>(
       (err) => toolError(`Failed to browse subreddit: ${err.message}`),
       (page) => {
-        const posts = page.items
+        let posts = page.items
+        if (args.skip_seen) {
+          posts = posts.filter((p) => p.liked !== true)
+        }
         const location = Option(args.subreddit).fold(
           () => "home feed",
           (sr) => `r/${sr}`,
         )
         if (posts.length === 0) {
-          return `No posts found in ${location}.`
+          return args.skip_seen
+            ? `All posts in ${location} have been seen. Try the next page or a different sort.`
+            : `No posts found in ${location}.`
         }
 
         const postSummaries = posts
-          .map(formatPostInfo)
-          .map((post, index) => formatPostSummary(post, index, page.source))
+          .map((post) => ({ formatted: formatPostInfo(post), seen: post.liked === true }))
+          .map(({ formatted, seen }, index) => {
+            const seenTag = seen ? " **[SEEN]**" : ""
+            return formatPostSummary(formatted, index, page.source) + seenTag
+          })
           .join("\n\n")
 
         const timeSuffix = args.sort === "top" || args.sort === "controversial" ? `, ${args.time_filter}` : ""
@@ -1519,6 +1582,45 @@ server.addTool({
       () => `# Content Unsaved Successfully
 
 ${args.thing_id} has been removed from your saved items.`,
+    )
+  },
+})
+
+// Vote tool
+server.addTool({
+  name: "vote",
+  description:
+    "Upvote, downvote, or clear your vote on a post or comment. Mutating but idempotent (same direction on the same thing is a no-op). Requires write access (REDDIT_USERNAME + REDDIT_PASSWORD, or browser auth). Rate-limited: paced by REDDIT_VOTE_MIN_INTERVAL_MS (default 12 s) and capped at REDDIT_VOTE_HOURLY_MAX (default 30). Self-voting is blocked (Reddit Responsible Builder Policy). Use browse_subreddit / get_top_posts to discover posts first.",
+  annotations: {
+    title: "Vote",
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+  parameters: z.object({
+    thing_id: z
+      .string()
+      .describe(
+        "The post or comment to vote on: a full thing id 't3_<id>' (post) or 't1_<id>' (comment), or just the base36 id (defaults to post).",
+      ),
+    direction: z
+      .enum(["up", "down", "clear"])
+      .describe("'up' to upvote (+1), 'down' to downvote (−1), 'clear' to remove an existing vote (0)."),
+  }),
+  execute: async (args) => {
+    const client = unwrapClient()
+
+    const dirMap = { up: 1 as const, down: -1 as const, clear: 0 as const }
+    const dir = dirMap[args.direction]
+
+    const result = await client.vote(args.thing_id, dir)
+    return result.fold<string | ContentResult>(
+      (err) => toolError(`Failed to vote: ${err.message}`),
+      () => {
+        const action = args.direction === "up" ? "Upvoted" : args.direction === "down" ? "Downvoted" : "Vote cleared on"
+        return `# ${action} ${args.thing_id}\n\nYour vote has been recorded.`
+      },
     )
   },
 })
